@@ -419,7 +419,16 @@ declare_class!(
             if unsafe { self.hasMarkedText() } && self.is_ime_enabled() && !is_control {
                 self.queue_event(WindowEvent::Ime(Ime::Preedit(String::new(), None)));
                 self.queue_event(WindowEvent::Ime(Ime::Commit(string)));
-                self.ivars().ime_state.set(ImeState::Committed);
+                if self.ivars().in_key_down.get() {
+                    // `keyDown:` clears the marked text and suppresses this key press.
+                    self.ivars().ime_state.set(ImeState::Committed);
+                } else {
+                    // Committed with no key press behind it (Dictation, a mouse click). There
+                    // is no key event to suppress, so `Committed` would instead swallow the
+                    // user's next, unrelated key press.
+                    *self.ivars().marked_text.borrow_mut() = NSMutableAttributedString::new();
+                    self.ivars().ime_state.set(ImeState::Ground);
+                }
             } else if !self.ivars().in_key_down.get()
                 && self.ivars().ime_allowed.get()
                 && !is_control
@@ -483,9 +492,11 @@ declare_class!(
             // is not handled by IME and should be handled by the application)
             if self.ivars().ime_allowed.get() {
                 let events_for_nsview = NSArray::from_slice(&[&*event]);
-                self.ivars().in_key_down.set(true);
+                // Restore rather than clear, so a nested `keyDown:` does not end the outer
+                // one's window early.
+                let was_in_key_down = self.ivars().in_key_down.replace(true);
                 unsafe { self.interpretKeyEvents(&events_for_nsview) };
-                self.ivars().in_key_down.set(false);
+                self.ivars().in_key_down.set(was_in_key_down);
 
                 // If the text was committed we must treat the next keyboard event as IME related.
                 if self.ivars().ime_state.get() == ImeState::Committed {
